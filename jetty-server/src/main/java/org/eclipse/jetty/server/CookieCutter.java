@@ -127,6 +127,7 @@ public class CookieCutter
             boolean invalue=false;
             boolean quoted=false;
             boolean escaped=false;
+            boolean reject=false;
             int tokenstart=-1;
             int tokenend=-1;
             for (int i = 0, length = hdr.length(), last=length-1; i < length; i++)
@@ -139,6 +140,9 @@ public class CookieCutter
                     if (escaped)
                     {
                         escaped=false;
+                        // CVE-2023-26049: an escaped ';' is still a ';' within the quoted section
+                        if (c==';')
+                            reject=true;
                         continue;
                     }
                     
@@ -163,6 +167,13 @@ public class CookieCutter
                             
                         case '\\':
                             escaped=true;
+                            continue;
+
+                        case ';':
+                            // CVE-2023-26049: a ';' is not a valid RFC6265 cookie-octet, even when quoted.
+                            // Allowing it would let this cookie absorb (and so expose the values of) the
+                            // cookies that follow it in the header, so the whole cookie is rejected.
+                            reject=true;
                             continue;
                         default:
                             continue;
@@ -279,7 +290,15 @@ public class CookieCutter
                     
                     try
                     {
-                        if (name.startsWith("$"))
+                        if (reject)
+                        {
+                            // CVE-2023-26049: the cookie had a ';' within a quoted section, so it is not added.
+                            // It still ends the previous cookie, so that a following $Path, $Domain or $Port
+                            // attribute is not applied to that previous cookie.
+                            if (!name.startsWith("$"))
+                                cookie=null;
+                        }
+                        else if (name.startsWith("$"))
                         {
                             String lowercaseName = name.toLowerCase(Locale.ENGLISH);
                             if ("$path".equals(lowercaseName))
@@ -317,7 +336,12 @@ public class CookieCutter
 
                     name = null;
                     value = null;
+                    reject = false;
                 }
+
+                // An unquoted ';' ends the cookie (even one without a name), so the next cookie is not rejected
+                if (c==';')
+                    reject=false;
             }
         }
 
